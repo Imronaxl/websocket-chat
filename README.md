@@ -222,7 +222,3 @@ make format
 | REDIS_PORT | 6379 | Порт Redis |
 | JWT_SECRET_KEY | - | Секретный ключ JWT |
 | DEBUG | false | Режим отладки |
-
-## Лицензия
-
-MIT
