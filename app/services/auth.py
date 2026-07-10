@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 from jose import JWTError, jwt
 from app.config import settings
 from datetime import datetime, timedelta
@@ -14,15 +14,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         )
 
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(
+    encoded_jwt: Any = jwt.encode(
         to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
     )
-    return encoded_jwt
+    return str(encoded_jwt)
 
 
 def verify_token(token: str) -> Optional[dict]:
     try:
-        payload = jwt.decode(
+        payload: Any = jwt.decode(
             token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
         return payload
