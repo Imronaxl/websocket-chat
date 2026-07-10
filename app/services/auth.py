@@ -1,8 +1,7 @@
-# JWT аутентификация
-from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from app.config import settings
+from datetime import datetime, timedelta
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

@@ -4,11 +4,10 @@ from app.config import settings
 
 
 class RedisClient:
-    def __init__(self):
+    def __init__(self) -> None:
         self._client: Optional[redis.Redis] = None
 
-    async def connect(self):
-        """Вызывается при старте приложения."""
+    async def connect(self) -> None:
         self._client = redis.Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
@@ -17,7 +16,7 @@ class RedisClient:
         )
         await self._client.ping()
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         if self._client:
             await self._client.close()
 
@@ -27,16 +26,13 @@ class RedisClient:
             raise RuntimeError("Redis client not connected")
         return self._client
 
-    async def add_user_to_room_online(self, room_id: str, user_id: str):
-        """Добавляет пользователя в множество онлайн-пользователей комнаты."""
+    async def add_user_to_room_online(self, room_id: str, user_id: str) -> None:
         await self.client.sadd(f"room:{room_id}:online", user_id)
 
-    async def remove_user_from_room_online(self, room_id: str, user_id: str):
-        """Удаляет пользователя из множества онлайн-пользователей комнаты."""
+    async def remove_user_from_room_online(self, room_id: str, user_id: str) -> None:
         await self.client.srem(f"room:{room_id}:online", user_id)
 
     async def get_online_users_in_room(self, room_id: str) -> set:
-        """Возвращает множество ID онлайн-пользователей в комнате."""
         return await self.client.smembers(f"room:{room_id}:online")
 
 
