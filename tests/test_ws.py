@@ -1,14 +1,12 @@
-# Тесты WebSocket с async test client
 import pytest
 import json
-from fastapi.testclient import TestClient
-from starlette.testclient import TestClient as SyncTestClient
+from starlette.testclient import TestClient
 from app.main import app
 
 
 def test_websocket_endpoint_exists():
     """Тест существования WebSocket эндпоинта."""
-    client = SyncTestClient(app)
+    client = TestClient(app)
     
     try:
         with client.websocket_connect(
