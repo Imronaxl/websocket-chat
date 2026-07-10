@@ -1,0 +1,30 @@
+# Development and test dependencies for CI
+
+# linters and type checkers
+ruff
+mypy
+
+# testing
+pytest
+pytest-asyncio
+pytest-cov
+
+# codecov uploader (optional)
+codecov
+
+# HTTP / test utilities
+httpx
+
+# DB clients used by tests
+asyncpg
+redis
+
+# Runtime dependencies (ensure tests that import the app work in CI)
+fastapi
+uvicorn
+sqlalchemy
+pydantic-settings
+structlog
+prometheus-client
+python-jose[cryptography]
+alembic
