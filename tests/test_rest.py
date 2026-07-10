@@ -1,13 +1,12 @@
 # Тесты REST API
 import pytest
 from datetime import datetime
-from httpx import AsyncClient
 
 from app.models.message import Message
 
 
 @pytest.mark.asyncio
-async def test_root_endpoint(client: AsyncClient):
+async def test_root_endpoint(client):
     """Тест кореневого эндпоинта."""
     response = await client.get("/")
     assert response.status_code == 200
@@ -17,7 +16,7 @@ async def test_root_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_health_endpoint(client: AsyncClient):
+async def test_health_endpoint(client):
     """Тест эндпоинта health check."""
     response = await client.get("/health")
     assert response.status_code == 200
@@ -25,7 +24,7 @@ async def test_health_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_metrics_endpoint(client: AsyncClient):
+async def test_metrics_endpoint(client):
     """Тест эндпоинта метрик Prometheus."""
     response = await client.get("/metrics")
     assert response.status_code == 200
@@ -33,7 +32,7 @@ async def test_metrics_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_get_room_messages_empty(client: AsyncClient, mock_redis):
+async def test_get_room_messages_empty(client, mock_redis):
     """Тест получения сообщений из пустой комнаты."""
     room_id = "test-room"
     response = await client.get(f"/api/v1/rooms/{room_id}/messages")
@@ -43,13 +42,11 @@ async def test_get_room_messages_empty(client: AsyncClient, mock_redis):
 
 @pytest.mark.asyncio
 async def test_get_room_messages_with_data(
-    client: AsyncClient, 
+    client, 
     test_session,
     mock_redis
 ):
     """Тест получения сообщений с данными в БД."""
-    from sqlalchemy import func
-    
     room_id = "test-room"
     
     message1 = Message(
@@ -82,7 +79,7 @@ async def test_get_room_messages_with_data(
 
 
 @pytest.mark.asyncio
-async def test_get_online_users_empty(client: AsyncClient):
+async def test_get_online_users_empty(client):
     """Тест получения списка онлайн-пользователей (пустая комната)."""
     room_id = "empty-room"
     response = await client.get(f"/api/v1/rooms/{room_id}/users")
@@ -93,7 +90,7 @@ async def test_get_online_users_empty(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_get_room_messages_limit(client: AsyncClient, test_session, mock_redis):
+async def test_get_room_messages_limit(client, test_session, mock_redis):
     """Тест ограничения количества возвращаемых сообщений."""
     room_id = "test-room-limit"
     
@@ -115,7 +112,7 @@ async def test_get_room_messages_limit(client: AsyncClient, test_session, mock_r
 
 
 @pytest.mark.asyncio
-async def test_message_response_schema(client: AsyncClient, test_session, mock_redis):
+async def test_message_response_schema(client, test_session, mock_redis):
     """Тест соответствия схемы ответа ожидаемому формату."""
     room_id = "schema-test-room"
     
