@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,7 +14,14 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(scope="function")
-def test_engine(event_loop):
+def test_event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture(scope="function")
+def test_engine(test_event_loop):
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
@@ -23,7 +32,7 @@ def test_engine(event_loop):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    event_loop.run_until_complete(create_schema())
+    test_event_loop.run_until_complete(create_schema())
     yield engine
 
     async def drop_schema():
@@ -31,11 +40,11 @@ def test_engine(event_loop):
             await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
 
-    event_loop.run_until_complete(drop_schema())
+    test_event_loop.run_until_complete(drop_schema())
 
 
 @pytest.fixture(scope="function")
-def test_session(test_engine, event_loop):
+def test_session(test_engine, test_event_loop):
     async_session_maker = async_sessionmaker(
         bind=test_engine,
         class_=AsyncSession,
@@ -48,11 +57,11 @@ def test_session(test_engine, event_loop):
     async def close_session():
         await session.close()
 
-    event_loop.run_until_complete(close_session())
+    test_event_loop.run_until_complete(close_session())
 
 
 @pytest.fixture(scope="function")
-def client(test_session, event_loop):
+def client(test_session, test_event_loop):
     async def override_get_session():
         yield test_session
 
@@ -65,7 +74,7 @@ def client(test_session, event_loop):
     yield client
 
     app.dependency_overrides.pop(get_session_dep, None)
-    event_loop.run_until_complete(client.aclose())
+    test_event_loop.run_until_complete(client.aclose())
 
 
 @pytest.fixture(scope="function")
