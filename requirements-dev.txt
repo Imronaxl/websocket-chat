@@ -17,6 +17,7 @@ httpx
 
 # DB clients used by tests
 asyncpg
+aiosqlite
 redis
 
 # Runtime dependencies (ensure tests that import the app work in CI)
