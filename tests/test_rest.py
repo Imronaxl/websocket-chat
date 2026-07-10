@@ -79,7 +79,7 @@ async def test_get_room_messages_with_data(
 
 
 @pytest.mark.asyncio
-async def test_get_online_users_empty(client):
+async def test_get_online_users_empty(client, mock_redis):
     """Тест получения списка онлайн-пользователей (пустая комната)."""
     room_id = "empty-room"
     response = await client.get(f"/api/v1/rooms/{room_id}/users")
