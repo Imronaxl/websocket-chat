@@ -1,11 +1,9 @@
 import pytest
-import json
 from starlette.testclient import TestClient
 from app.main import app
 
 
 def test_websocket_endpoint_exists():
-    """Тест существования WebSocket эндпоинта."""
     client = TestClient(app)
     
     try:
@@ -20,7 +18,6 @@ def test_websocket_endpoint_exists():
 
 @pytest.mark.asyncio
 async def test_ws_message_types():
-    """Тест различных типов WebSocket сообщений."""
     from app.schemas.ws_message import (
         JoinRoomMessage,
         LeaveRoomMessage,
@@ -51,7 +48,6 @@ async def test_ws_message_types():
 
 @pytest.mark.asyncio
 async def test_ws_message_serialization():
-    """Тест сериализации WebSocket сообщений."""
     from app.schemas.ws_message import ChatMessage, UserJoinedBroadcast
     
     chat_msg = ChatMessage(
@@ -81,7 +77,6 @@ async def test_ws_message_serialization():
 
 @pytest.mark.asyncio
 async def test_invalid_json_handling():
-    """Тест обработки невалидного JSON."""
     from app.schemas.ws_message import ChatMessage
     
     invalid_data = {"type": "chat", "content": 123}
@@ -92,7 +87,6 @@ async def test_invalid_json_handling():
 
 @pytest.mark.asyncio
 async def test_chat_message_validation():
-    """Тест валидации сообщений чата."""
     from app.schemas.ws_message import ChatMessage
     
     valid_msg = ChatMessage(

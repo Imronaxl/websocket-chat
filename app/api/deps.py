@@ -1,8 +1,5 @@
-# Зависимости (сессия БД, текущий пользователь)
-from typing import Optional, Generator
+from typing import Optional
 from fastapi import Depends, WebSocket, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.session import get_session
 from app.services.auth import verify_token
 
 

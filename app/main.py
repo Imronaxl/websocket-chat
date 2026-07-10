@@ -1,9 +1,7 @@
-# app/main.py
 import asyncio
 import signal
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 from app.config import settings
 from app.services.redis_client import redis_client
