@@ -131,8 +131,6 @@ class ConnectionManager:
     async def handle_chat_message(self, websocket: WebSocket, msg: ChatMessage):
         room_id = msg.room_id
         user_info = self.connection_info[websocket]
-        user_id = user_info["user_id"]
-        username = user_info["username"]
 
         if (
             room_id not in self.room_connections

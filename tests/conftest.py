@@ -1,4 +1,3 @@
-# Фикстуры для pytest (тестовая БД, клиент)
 import asyncio
 import pytest
 from typing import AsyncGenerator, Generator
@@ -7,7 +6,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.config import settings
 from app.db.base import Base
 from app.services.redis_client import redis_client
 
@@ -17,7 +15,6 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 @pytest.fixture(scope="session")
 def event_loop() -> Generator:
-    """Создает цикл событий для асинхронных тестов."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
@@ -25,7 +22,6 @@ def event_loop() -> Generator:
 
 @pytest.fixture(scope="function")
 async def test_engine():
-    """Создает тестовый движок SQLAlchemy с SQLite in-memory."""
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
@@ -44,7 +40,6 @@ async def test_engine():
 
 @pytest.fixture(scope="function")
 async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Создает тестовую сессию SQLAlchemy."""
     async_session_maker = async_sessionmaker(
         bind=test_engine,
         class_=AsyncSession,
@@ -57,7 +52,6 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture(scope="function")
 async def client(test_session) -> AsyncGenerator[AsyncClient, None]:
-    """Создает асинхронный HTTP клиент для тестирования API."""
     
     async def override_get_session():
         yield test_session
@@ -73,7 +67,6 @@ async def client(test_session) -> AsyncGenerator[AsyncClient, None]:
 
 @pytest.fixture(scope="function")
 async def mock_redis() -> None:
-    """Фикстура для мока Redis (заглушка)."""
     original_client = redis_client._client
     
     class MockRedis:
