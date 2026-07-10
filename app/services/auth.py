@@ -25,6 +25,6 @@ def verify_token(token: str) -> Optional[dict]:
         payload: Any = jwt.decode(
             token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
-        return payload
+        return payload  # type: ignore[return-value]
     except JWTError:
         return None
