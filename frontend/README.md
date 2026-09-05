@@ -1,5 +1,7 @@
 # Frontend — WebSocket Chat
 
+[![Frontend CI](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml)
+
 Next.js 16 + TypeScript frontend for the [WebSocket Chat API](../). Talks to
 the FastAPI backend over plain WebSocket + REST, with auto-reconnect,
 heartbeat, room management, and a portfolio-style "How this works" dialog.
