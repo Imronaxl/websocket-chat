@@ -1,4 +1,3 @@
-```
 # Python
 __pycache__/
 *.pyc
@@ -63,4 +62,17 @@ Thumbs.db
 
 # Local config
 local/
-```
+
+# Frontend
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+.DS_Store
+
+# Mini-services logs
+mini-services/**/service.log
+mini-services/**/supervisor.log
