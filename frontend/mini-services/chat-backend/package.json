@@ -1,0 +1,12 @@
+{
+  "name": "chat-backend-mock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript reference implementation of the Python WebSocket chat backend protocol.",
+  "scripts": {
+    "dev": "bun --hot index.ts"
+  },
+  "dependencies": {
+    "typescript": "^5"
+  }
+}
