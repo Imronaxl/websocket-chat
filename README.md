@@ -1,11 +1,11 @@
 # WebSocket Chat API
 
+[![Backend CI](https://github.com/imronaxl/websocket-chat/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/imronaxl/websocket-chat/actions/workflows/backend-ci.yml)
+[![Frontend CI](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml)
+
 Асинхронный чат на FastAPI с поддержкой WebSocket, Redis Pub/Sub для
 масштабирования и PostgreSQL для хранения истории сообщений. Включает
 фронтенд на Next.js 16 + TypeScript.
-
-> **CI**: workflow-файлы лежат в [`docs/ci-examples/`](docs/ci-examples/) —
-> активируются за 2 минуты через GitHub UI (см. инструкцию там же).
 
 ## Скриншоты
 
@@ -263,19 +263,18 @@ make format
 
 ## CI / CD
 
-Workflow-файлы лежат в [`docs/ci-examples/`](docs/ci-examples/) и
-активируются за 2 минуты через GitHub UI (инструкция по активации — там же).
+В `.github/workflows/` два workflow:
 
 ### `backend-ci.yml`
 
 Срабатывает на push/PR в `main` и на изменения в `app/**`, `tests/**`,
-`migrations/**`, `pyproject.toml`. Запускает:
+`migrations/**`, `pyproject.toml`, `requirements-dev.txt`. Запускает:
 - Установка Python 3.12 + Postgres 15 + Redis 7 services
-- Установка зависимостей (`pip install -e ".[dev]"`)
+- Установка зависимостей (`pip install -r requirements-dev.txt`)
 - Ruff lint
 - Mypy type-check
 - pytest с покрытием
-- Загрузка покрытия в Codecov (опционально)
+- Загрузка покрытия в Codecov (опционально, нужен `CODECOV_TOKEN` secret)
 
 ### `frontend-ci.yml`
 
@@ -287,8 +286,7 @@ Workflow-файлы лежат в [`docs/ci-examples/`](docs/ci-examples/) и
 - `bun run build`
 
 Оба workflow поддерживают `workflow_dispatch` для ручного запуска из
-вкладки Actions. После активации бейджи можно добавить в README (код
-бейджей — в [`docs/ci-examples/README.md`](docs/ci-examples/README.md)).
+вкладки Actions. Бейджи CI — вверху этого файла.
 
 ## Конфигурация
 
