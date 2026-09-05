@@ -1,13 +1,9 @@
-*.ts linguist-vendors=true
-*.tsx linguist-vendors=true
-
 *.ts linguist-documentation=true
 *.tsx linguist-documentation=true
 
-*.js linguist-vendors=true
-*.jsx linguist-vendors=true
+*.js linguist-documentation=true
+*.jsx linguist-documentation=true
 
-
-*.css linguist-vendors=true
-*.scss linguist-vendors=true
-*.less linguist-vendors=true
+*.css linguist-documentation=true
+*.scss linguist-documentation=true
+*.less linguist-documentation=true
