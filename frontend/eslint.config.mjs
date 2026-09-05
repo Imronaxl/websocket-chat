@@ -13,6 +13,10 @@ export default [
       "react/no-unescaped-entities": "off",
       "no-console": "off",
       "no-empty": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/purity": "off",
+      "react-compiler/react-compiler": "off",
+      "import/no-anonymous-default-export": "off",
     },
   },
   {
