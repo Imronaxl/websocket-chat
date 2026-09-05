@@ -1,8 +1,12 @@
 *.ts linguist-vendors=true
 *.tsx linguist-vendors=true
 
+*.ts linguist-documentation=true
+*.tsx linguist-documentation=true
+
 *.js linguist-vendors=true
 *.jsx linguist-vendors=true
+
 
 *.css linguist-vendors=true
 *.scss linguist-vendors=true
