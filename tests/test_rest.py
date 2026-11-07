@@ -1,142 +1,75 @@
-# Тесты REST API
-import pytest
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from app.models.message import Message
+import jwt
+from fastapi.testclient import TestClient
 
-
-@pytest.mark.asyncio
-async def test_root_endpoint(client):
-    """Тест кореневого эндпоинта."""
-    response = await client.get("/")
-    assert response.status_code == 200
-    data = response.json()
-    assert "WebSocket Chat API" in data["message"]
-    assert "version" in data
+from app.security import issue_token, verify_token
+from tests.conftest import SECRET, auth_headers, login, receive_until
 
 
-@pytest.mark.asyncio
-async def test_health_endpoint(client):
-    """Тест эндпоинта health check."""
-    response = await client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+def test_health_and_ready(client: TestClient) -> None:
+    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/ready").json() == {"database": "ok", "redis": "ok"}
 
 
-@pytest.mark.asyncio
-async def test_metrics_endpoint(client):
-    """Тест эндпоинта метрик Prometheus."""
-    response = await client.get("/metrics")
-    assert response.status_code == 200
-    assert "text/plain" in response.headers["content-type"]
+def test_guest_login_issues_verifiable_token(client: TestClient) -> None:
+    token = login(client, "  Alice  ")
+    assert token["username"] == "Alice"
+
+    user = verify_token(SECRET, token["access_token"])
+    assert user is not None
+    assert (user.id, user.name) == (token["user_id"], "Alice")
 
 
-@pytest.mark.asyncio
-async def test_get_room_messages_empty(client, mock_redis):
-    """Тест получения сообщений из пустой комнаты."""
-    room_id = "test-room"
-    response = await client.get(f"/api/v1/rooms/{room_id}/messages")
-    assert response.status_code == 200
-    assert response.json() == []
+def test_guest_login_validates_username(client: TestClient) -> None:
+    for bad in ["", "   ", "x" * 33, "<script>"]:
+        assert client.post("/api/v1/auth/guest", json={"username": bad}).status_code == 422
 
 
-@pytest.mark.asyncio
-async def test_get_room_messages_with_data(
-    client, 
-    test_session,
-    mock_redis
-):
-    """Тест получения сообщений с данными в БД."""
-    room_id = "test-room"
-    
-    message1 = Message(
-        room_id=room_id,
-        user_id="user-1",
-        username="Alice",
-        content="Hello, World!",
-        created_at=datetime(2024, 1, 15, 10, 30, 0)
+def test_rejected_tokens() -> None:
+    token, _, _ = issue_token(SECRET, "bob", timedelta(minutes=5))
+    expired, _, _ = issue_token(SECRET, "bob", timedelta(minutes=-1))
+    forged, _, _ = issue_token("another-secret-0123456789-0123456789", "bob", timedelta(minutes=5))
+    unsigned = jwt.encode(
+        {"sub": "x", "name": "bob", "exp": datetime.now(UTC) + timedelta(minutes=5)}, key=None, algorithm="none"
     )
-    message2 = Message(
-        room_id=room_id,
-        user_id="user-2",
-        username="Bob",
-        content="Hi there!",
-        created_at=datetime(2024, 1, 15, 10, 31, 0)
-    )
-    
-    test_session.add(message1)
-    test_session.add(message2)
-    await test_session.commit()
-    
-    response = await client.get(f"/api/v1/rooms/{room_id}/messages?limit=10")
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data) == 2
-    assert data[0]["content"] == "Hello, World!"
-    assert data[1]["content"] == "Hi there!"
-    assert data[0]["username"] == "Alice"
-    assert data[1]["username"] == "Bob"
+
+    assert verify_token(SECRET, token) is not None
+    for bad in [expired, forged, unsigned, "garbage"]:
+        assert verify_token(SECRET, bad) is None
 
 
-@pytest.mark.asyncio
-async def test_get_online_users_empty(client, mock_redis):
-    """Тест получения списка онлайн-пользователей (пустая комната)."""
-    room_id = "empty-room"
-    response = await client.get(f"/api/v1/rooms/{room_id}/users")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["room_id"] == room_id
-    assert data["online_users"] == []
+def test_history_requires_auth(client: TestClient) -> None:
+    assert client.get("/api/v1/rooms/general/messages").status_code == 401
+    assert client.get("/api/v1/rooms/general/users").status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_get_room_messages_limit(client, test_session, mock_redis):
-    """Тест ограничения количества возвращаемых сообщений."""
-    room_id = "test-room-limit"
-    
-    for i in range(10):
-        msg = Message(
-            room_id=room_id,
-            user_id=f"user-{i}",
-            username=f"User{i}",
-            content=f"Message {i}",
-            created_at=datetime(2024, 1, 15, 10, 0, i)
-        )
-        test_session.add(msg)
-    await test_session.commit()
-    
-    response = await client.get(f"/api/v1/rooms/{room_id}/messages?limit=5")
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data) == 5
+def test_invalid_room_id(client: TestClient) -> None:
+    headers = auth_headers(login(client, "alice"))
+    assert client.get("/api/v1/rooms/bad room!/messages", headers=headers).status_code == 422
 
 
-@pytest.mark.asyncio
-async def test_message_response_schema(client, test_session, mock_redis):
-    """Тест соответствия схемы ответа ожидаемому формату."""
-    room_id = "schema-test-room"
-    
-    msg = Message(
-        room_id=room_id,
-        user_id="test-user",
-        username="TestUser",
-        content="Test content",
-        created_at=datetime(2024, 1, 15, 12, 0, 0)
-    )
-    test_session.add(msg)
-    await test_session.commit()
-    
-    response = await client.get(f"/api/v1/rooms/{room_id}/messages")
-    assert response.status_code == 200
-    data = response.json()
-    
-    assert len(data) == 1
-    message = data[0]
-    
-    assert "id" in message
-    assert isinstance(message["id"], int)
-    assert message["room_id"] == room_id
-    assert message["user_id"] == "test-user"
-    assert message["username"] == "TestUser"
-    assert message["content"] == "Test content"
-    assert "created_at" in message
+def test_history_pagination(client: TestClient) -> None:
+    token = login(client, "alice")
+    headers = auth_headers(token)
+
+    with client.websocket_connect(f"/api/v1/ws?token={token['access_token']}") as ws:
+        ws.send_json({"type": "join", "room_id": "general"})
+        receive_until(ws, "joined")
+        for i in range(5):
+            ws.send_json({"type": "chat", "room_id": "general", "content": f"msg {i}"})
+            receive_until(ws, "message")
+
+    newest = client.get("/api/v1/rooms/general/messages?limit=3", headers=headers).json()
+    assert [m["content"] for m in newest] == ["msg 2", "msg 3", "msg 4"]
+
+    older = client.get(f"/api/v1/rooms/general/messages?limit=3&before_id={newest[0]['id']}", headers=headers).json()
+    assert [m["content"] for m in older] == ["msg 0", "msg 1"]
+
+    assert client.get("/api/v1/rooms/general/messages?limit=500", headers=headers).status_code == 422
+
+
+def test_metrics_endpoint(client: TestClient) -> None:
+    body = client.get("/metrics").text
+    assert "chat_ws_connections_active" in body
+    assert "chat_message_handling_seconds" in body

@@ -1,37 +1,30 @@
+from functools import lru_cache
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-import os
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
-        case_sensitive=True,
-        extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    PROJECT_NAME: str = "WebSocket Chat API"
-    DEBUG: bool = False
+    database_url: str = "postgresql+asyncpg://chat:chat@localhost:5432/chat"
+    redis_url: str = "redis://localhost:6379/0"
 
-    POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: int = 5432
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
-    POSTGRES_DB: str = "chat_db"
+    jwt_secret: str = Field(min_length=32)
+    jwt_ttl_minutes: int = 12 * 60
 
-    @property
-    def database_url(self) -> str:
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+    heartbeat_interval: float = 25.0
+    max_connections_per_user: int = 5
+    send_queue_size: int = 256
+    messages_per_second: float = 5.0
+    message_burst: int = 10
 
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-    REDIS_DB: int = 0
-
-    WS_HEARTBEAT_INTERVAL: int = 30
-    WS_MAX_CONNECTIONS_PER_USER: int = 5
-
-    JWT_SECRET_KEY: str = "change-this-secret-in-production"
-    JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    cors_origins: list[str] = []
+    log_json: bool = True
+    # Tests and the demo can create tables directly; production uses Alembic.
+    create_schema: bool = False
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

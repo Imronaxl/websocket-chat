@@ -1,25 +1,37 @@
-from typing import Optional
-from fastapi import Depends, WebSocket, HTTPException
-from app.services.auth import verify_token
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.config import Settings
+from app.hub import Hub
+from app.repository import MessageRepository
+from app.security import User, verify_token
+
+_bearer = HTTPBearer(auto_error=False)
 
 
-async def get_current_user_from_ws(
-    websocket: WebSocket, token: Optional[str] = None
-) -> dict:
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        raise Exception("Missing token")
-
-    payload = verify_token(token)
-    if not payload:
-        await websocket.close(code=4002, reason="Invalid token")
-        raise Exception("Invalid token")
-
-    return payload
+def get_settings(request: Request) -> Settings:
+    return request.app.state.settings  # type: ignore[no-any-return]
 
 
-def get_current_user_rest(token: str = Depends()) -> dict:
-    payload = verify_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return payload
+def get_hub(request: Request) -> Hub:
+    return request.app.state.hub  # type: ignore[no-any-return]
+
+
+def get_repository(request: Request) -> MessageRepository:
+    return request.app.state.repository  # type: ignore[no-any-return]
+
+
+def current_user(
+    settings: Annotated[Settings, Depends(get_settings)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> User:
+    user = verify_token(settings.jwt_secret, credentials.credentials) if credentials else None
+    if user is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user

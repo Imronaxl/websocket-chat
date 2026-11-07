@@ -1,122 +1,89 @@
-import asyncio
+import json
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
 
+import fakeredis
 import pytest
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketTestSession
 
-from app.db.base import Base
-from app.main import app
-from app.services.redis_client import redis_client
+from app.config import Settings
+from app.main import create_app
 
-
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+SECRET = "test-secret-0123456789-0123456789-abc"
 
 
-@pytest.fixture(scope="function")
-def test_event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture
+def redis_server() -> fakeredis.FakeServer:
+    return fakeredis.FakeServer()
 
 
-@pytest.fixture(scope="function")
-def test_engine(test_event_loop):
-    engine = create_async_engine(
-        TEST_DATABASE_URL,
-        echo=False,
-        poolclass=StaticPool,
-    )
+@pytest.fixture
+def make_settings(tmp_path: Path) -> Callable[..., Settings]:
+    def make(**overrides: Any) -> Settings:
+        values: dict[str, Any] = {
+            "database_url": f"sqlite+aiosqlite:///{tmp_path / 'chat.db'}",
+            "jwt_secret": SECRET,
+            "create_schema": True,
+            "log_json": False,
+            "heartbeat_interval": 30,
+        }
+        values.update(overrides)
+        return Settings(**values)
 
-    async def create_schema():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    test_event_loop.run_until_complete(create_schema())
-    yield engine
-
-    async def drop_schema():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        await engine.dispose()
-
-    test_event_loop.run_until_complete(drop_schema())
+    return make
 
 
-@pytest.fixture(scope="function")
-def test_session(test_engine, test_event_loop):
-    async_session_maker = async_sessionmaker(
-        bind=test_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+@pytest.fixture
+def make_client(
+    make_settings: Callable[..., Settings], redis_server: fakeredis.FakeServer
+) -> Iterator[Callable[..., TestClient]]:
+    """Starts app instances that share one database and one Redis server,
+    like several replicas behind a load balancer."""
+    clients: list[TestClient] = []
 
-    session = async_session_maker()
-    yield session
+    def make(**overrides: Any) -> TestClient:
+        app = create_app(
+            make_settings(**overrides),
+            redis_factory=lambda: fakeredis.FakeAsyncRedis(server=redis_server, decode_responses=True),
+        )
+        client = TestClient(app)
+        client.__enter__()
+        clients.append(client)
+        return client
 
-    async def close_session():
-        await session.close()
-
-    test_event_loop.run_until_complete(close_session())
-
-
-@pytest.fixture(scope="function")
-def client(test_session, test_event_loop):
-    async def override_get_session():
-        yield test_session
-
-    from app.db.session import get_session as get_session_dep
-
-    app.dependency_overrides[get_session_dep] = override_get_session
-
-    transport = ASGITransport(app=app)
-    client = AsyncClient(transport=transport, base_url="http://test")
-    yield client
-
-    app.dependency_overrides.pop(get_session_dep, None)
-    test_event_loop.run_until_complete(client.aclose())
+    yield make
+    for c in reversed(clients):
+        c.__exit__(None, None, None)
 
 
-@pytest.fixture(scope="function")
-def mock_redis():
-    original_client = redis_client._client
+@pytest.fixture
+def client(make_client: Callable[..., TestClient]) -> TestClient:
+    return make_client()
 
-    class MockRedis:
-        async def ping(self):
-            return True
 
-        async def close(self):
-            pass
+def login(client: TestClient, username: str) -> dict[str, Any]:
+    resp = client.post("/api/v1/auth/guest", json={"username": username})
+    assert resp.status_code == 200, resp.text
+    return resp.json()  # type: ignore[no-any-return]
 
-        async def sadd(self, key, *values):
-            return len(values)
 
-        async def srem(self, key, *values):
-            return len(values)
+def auth_headers(token: dict[str, Any]) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token['access_token']}"}
 
-        async def smembers(self, key):
-            return set()
 
-        async def publish(self, channel, message):
-            return 1
-
-        def pubsub(self):
-            return MockPubSub()
-
-    class MockPubSub:
-        async def psubscribe(self, pattern):
-            pass
-
-        async def punsubscribe(self, pattern):
-            pass
-
-        async def close(self):
-            pass
-
-        async def listen(self):
-            if False:
-                yield
-
-    redis_client._client = MockRedis()
-    yield
-    redis_client._client = original_client
+def receive_until(
+    ws: WebSocketTestSession,
+    type_: str,
+    where: Callable[[dict[str, Any]], bool] = lambda _: True,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Reads frames until one of the given type (matching `where`) arrives."""
+    seen = []
+    for _ in range(limit):
+        frame = json.loads(ws.receive_text())
+        if frame["type"] == type_ and where(frame):
+            return frame  # type: ignore[no-any-return]
+        seen.append(frame["type"])
+    raise AssertionError(f"no {type_!r} frame, got {seen}")

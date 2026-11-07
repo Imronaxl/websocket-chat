@@ -1,86 +1,98 @@
-import asyncio
-import signal
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
 
-from app.config import settings
-from app.services.redis_client import redis_client
-from app.services.connection_manager import manager
-from app.api.v1.router import router as v1_router
-from app.db.session import engine
-from app.core.metrics import init_metrics, get_metrics
-from app.core.logger import get_logger
+import structlog
+from fastapi import FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from redis.asyncio import Redis
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-logger = get_logger(__name__)
+from app import metrics
+from app.api import rest, ws
+from app.config import Settings, get_settings
+from app.hub import Hub
+from app.logs import configure_logging
+from app.models import Base
+from app.repository import MessageRepository
 
-init_metrics()
+log = structlog.get_logger(__name__)
 
 
-async def shutdown_handler():
-    logger.info("shutdown_signal_received")
-    manager.is_shutting_down = True
+def create_app(
+    settings: Settings | None = None,
+    redis_factory: Callable[[], Redis] | None = None,
+) -> FastAPI:
+    """Builds the application. Tests pass their own settings and a fake Redis."""
+    settings = settings or get_settings()
+    configure_logging(settings.log_json)
 
-    for connection in list(manager.active_connections):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+        if settings.create_schema:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        redis = redis_factory() if redis_factory else Redis.from_url(settings.redis_url, decode_responses=True)
+        await redis.ping()
+
+        repository = MessageRepository(async_sessionmaker(engine, expire_on_commit=False))
+        hub = Hub(redis, repository, settings.heartbeat_interval, settings.max_connections_per_user)
+        await hub.start()
+
+        app.state.settings = settings
+        app.state.engine = engine
+        app.state.redis = redis
+        app.state.repository = repository
+        app.state.hub = hub
+        log.info("startup_complete")
         try:
-            await manager.send_personal_message({"type": "server_shutdown"}, connection)
-        except Exception:
-            pass
+            yield
+        finally:
+            await hub.stop()
+            await redis.aclose()
+            await engine.dispose()
+            log.info("shutdown_complete")
 
-    await asyncio.sleep(2)
+    app = FastAPI(title="WebSocket Chat", version="1.0.0", lifespan=lifespan)
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+    app.include_router(rest.router)
+    app.include_router(ws.router)
 
+    @app.get("/health", tags=["ops"])
+    async def health() -> dict[str, str]:
+        """Liveness: the process is serving requests."""
+        return {"status": "ok"}
 
-def setup_signal_handlers():
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown_handler()))
+    @app.get("/ready", tags=["ops"])
+    async def ready() -> JSONResponse:
+        """Readiness: Postgres and Redis are reachable."""
+        checks: dict[str, str] = {}
+        try:
+            async with app.state.engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        except Exception as exc:
+            checks["database"] = f"error: {type(exc).__name__}"
+        try:
+            await app.state.redis.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = f"error: {type(exc).__name__}"
+        healthy = all(v == "ok" for v in checks.values())
+        return JSONResponse(checks, status_code=200 if healthy else 503)
 
+    @app.get("/metrics", tags=["ops"])
+    async def prometheus_metrics() -> Response:
+        return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("application_startup")
-
-    await redis_client.connect()
-    logger.info("redis_connected")
-
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(lambda _: logger.info("database_connected"))
-    except Exception as e:
-        logger.error("database_connection_failed", error=str(e))
-
-    setup_signal_handlers()
-
-    yield
-
-    logger.info("application_shutdown")
-
-    await redis_client.disconnect()
-    logger.info("redis_disconnected")
-
-    await engine.dispose()
-    logger.info("database_pool_disposed")
-
-
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-app.include_router(v1_router, prefix="/api")
-
-
-@app.get("/")
-async def root():
-    return {"message": "WebSocket Chat API is running", "version": "0.1.0"}
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.get("/metrics")
-async def metrics():
-    return get_metrics()
+    return app
