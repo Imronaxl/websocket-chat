@@ -1,340 +1,190 @@
-# WebSocket Chat API
+# WebSocket Chat
 
-[![Backend CI](https://github.com/imronaxl/websocket-chat/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/imronaxl/websocket-chat/actions/workflows/backend-ci.yml)
-[![Frontend CI](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/imronaxl/websocket-chat/actions/workflows/frontend-ci.yml)
+[![Backend](https://github.com/Imronaxl/websocket-chat/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/Imronaxl/websocket-chat/actions/workflows/backend-ci.yml)
+[![Frontend](https://github.com/Imronaxl/websocket-chat/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/Imronaxl/websocket-chat/actions/workflows/frontend-ci.yml)
 
-Асинхронный чат на FastAPI с поддержкой WebSocket, Redis Pub/Sub для
-масштабирования и PostgreSQL для хранения истории сообщений. Включает
-фронтенд на Next.js 16 + TypeScript.
+A real-time chat server on FastAPI WebSockets. Messages are stored in
+PostgreSQL and fanned out through Redis Pub/Sub, so several backend instances
+behind a load balancer serve the same rooms. A Next.js client is included.
 
-## Скриншоты
+![Chat](docs/screenshots/chat.png)
 
-| Login | Chat — connected |
-|:---:|:---:|
-| ![Login](docs/screenshots/01-login.png) | ![Chat joined](docs/screenshots/02-chat-joined.png) |
-
-| Chat with messages | "How this works" modal |
-|:---:|:---:|
-| ![Chat with messages](docs/screenshots/03-chat-with-messages.png) | ![Info dialog](docs/screenshots/04-info-dialog.png) |
-
-| Light theme | Mobile |
-|:---:|:---:|
-| ![Light theme](docs/screenshots/05-light-theme.png) | ![Mobile](docs/screenshots/06-mobile.png) |
-
-Полная галерея — в [`docs/screenshots/`](docs/screenshots/).
-
-## Стек технологий
-
-**Backend:**
-- **FastAPI** — современный асинхронный фреймворк
-- **WebSocket** — реальное время для сообщений
-- **Redis Pub/Sub** — распределённая передача сообщений между инстансами
-- **PostgreSQL + asyncpg** — асинхронное хранение данных
-- **SQLAlchemy 2.0** — ORM с async поддержкой
-- **Alembic** — миграции БД
-- **Pydantic v2** — валидация данных
-- **structlog** — структурированное логирование
-- **Prometheus** — метрики
-- **Docker & Docker Compose** — контейнеризация
-
-**Frontend:**
-- **Next.js 16** (App Router) + **React 19**
-- **TypeScript 5** strict mode
-- **Tailwind CSS 4** + **shadcn/ui** (New York style)
-- **next-themes** — тёмная/светлая тема
-- **lucide-react** — иконки
-- Plain **WebSocket** (без Socket.io) — соответствует бэкенду
-
-## Структура проекта
+## How it works
 
 ```
-├── app/                            # FastAPI бэкенд
-│   ├── api/
-│   │   ├── deps.py                 # Зависимости FastAPI
-│   │   └── v1/
-│   │       ├── endpoints/
-│   │       │   ├── rooms.py        # REST: комнаты и участники
-│   │       │   └── ws.py           # WebSocket эндпоинт
-│   │       └── router.py           # Роутер v1
-│   ├── core/                       # exceptions, logger, metrics
-│   ├── db/                         # Base модель + асинхронная сессия
-│   ├── models/                     # Message, User
-│   ├── schemas/                    # Pydantic-схемы (REST + WS)
-│   ├── services/                   # auth, connection_manager, redis, repository
-│   ├── config.py
-│   └── main.py
-├── frontend/                       # Next.js 16 + TypeScript фронтенд
-│   ├── src/
-│   │   ├── app/                    # App Router (layout, page, globals.css)
-│   │   │   └── api/v1/internal/ensure-backend/   # Self-heal эндпоинт для demo
-│   │   ├── components/
-│   │   │   ├── chat/               # 11 компонентов чата
-│   │   │   └── ui/                 # shadcn/ui primitives
-│   │   ├── hooks/                  # use-chat-websocket, use-chat-state
-│   │   └── lib/                    # chat-types, chat-config, chat-protocol, avatar
-│   ├── mini-services/chat-backend/ # TS demo-адаптер (тот же протокол, что и FastAPI)
-│   ├── instrumentation.ts          # Авто-запуск demo-адаптера при старте Next.js
-│   ├── instrumentation-node.ts     # Watchdog для mini-service
-│   └── README.md                   # Подробнее про фронтенд
-├── docs/
-│   └── screenshots/                # Скриншоты интерфейса
-├── .github/
-│   └── workflows/
-│       ├── backend-ci.yml          # CI для Python: lint + tests
-│       └── frontend-ci.yml         # CI для Next.js: lint + type-check + build
-├── docker/
-│   ├── Dockerfile
-│   └── nginx.conf
-├── migrations/                     # Alembic миграции
-├── tests/                          # Тесты бэкенда
-├── docker-compose.yml
-├── Makefile
-└── pyproject.toml
+                      ┌─────────── nginx :8080 ───────────┐
+browser ────────────► │ /      → web (Next.js)            │
+                      │ /api/  → api replicas, round robin│
+                      └─────────────────┬─────────────────┘
+                              ┌─────────┴─────────┐
+                              ▼                   ▼
+                           api #1              api #2
+                            │ ▲                 │ ▲
+                    publish │ │ subscribed      │ │
+                            ▼ │ rooms only      ▼ │
+                      ┌──────────────── Redis ────────────────┐
+                      │ chat:room:<id> channels, presence hash│
+                      └───────────────────────────────────────┘
+           both replicas insert and read history in PostgreSQL
 ```
 
-## Быстрый старт
+1. The client gets a signed guest token from `POST /api/v1/auth/guest` and
+   opens `/api/v1/ws?token=…`. The handshake is rejected (close code 4401)
+   unless the token verifies, so the user id cannot be chosen by the client.
+2. On `join`, the instance subscribes to `chat:room:<id>` if it is the first
+   local member, and increments the user's connection count in a Redis hash.
+3. On `chat`, the message is validated, rate-limited, inserted into Postgres
+   and published to the room channel. Every instance subscribed to that
+   channel delivers it to its local sockets.
+4. Each socket has a bounded send queue drained by its own writer task. A
+   client that stops reading fills its queue and is disconnected (4413)
+   instead of slowing down delivery to everyone else.
+5. The server pings every 25 s and closes sockets that stay silent for two
+   intervals (4408). On shutdown it tells clients and releases their presence.
 
-### Бэкенд (через Docker Compose)
+### Design notes
+
+- **One subscription per room per instance**, not per connection. The first
+  version subscribed every socket to `room:*`, which opened a Redis connection
+  per client and delivered every room's messages to everyone.
+- **Presence counts connections.** `chat:room:<id>:online` maps user id to the
+  number of open sockets, so closing one of two tabs does not mark a user
+  offline. Decrement-and-delete runs as a Lua script, so two instances cannot
+  race between the decrement and the delete.
+- **Subscriptions are changed by the listener task only.** The task that owns
+  the Pub/Sub connection applies queued subscribe/unsubscribe requests and
+  resolves a future when Redis confirms, so a join waits until the room is
+  actually subscribed before announcing the user.
+- **Cursor pagination.** History is paged by message id (`before_id`) on a
+  `(room_id, id)` index, which stays correct while new messages arrive,
+  unlike offsets.
+
+## Running it
 
 ```bash
-docker-compose up -d
+docker compose up --build        # http://localhost:8080
 ```
 
-Сервисы будут доступны:
-- API: http://localhost:8000
-- Документация: http://localhost:8000/docs
-- Health: http://localhost:8000/health
-- Metrics: http://localhost:8000/metrics
+This starts PostgreSQL, Redis, a one-off migration job, **two API replicas**,
+the Next.js client and nginx in front. Open the app in two browser windows
+to chat; the replicas exchange messages through Redis.
 
-### Фронтенд
-
-```bash
-cd frontend
-bun install
-
-# Demo-режим (без Python/Postgres/Redis — использует TS-адаптер):
-bun run dev
-
-# Production-режим (с реальным Python-бэкендом):
-NEXT_PUBLIC_CHAT_MODE=backend bun run dev
-```
-
-Откройте http://localhost:3000, выберите display name — и можно общаться.
-В production-режиме убедитесь, что бэкенд из `docker-compose up` запущен.
-
-### Локальная разработка бэкенда (без Docker)
+Local development:
 
 ```bash
 pip install -e ".[dev]"
-docker-compose up -d postgres redis
+cp .env.example .env              # point at your Postgres and Redis
 alembic upgrade head
-make run
+uvicorn --factory app.main:create_app --reload --port 8000
+
+cd frontend && bun install
+NEXT_PUBLIC_API_URL=http://localhost:8000 bun run dev    # http://localhost:3000
 ```
 
-## Использование WebSocket
+## WebSocket protocol
 
-### Подключение
+All frames are JSON text.
 
-```
-ws://localhost:8000/api/v1/ws?user_id=123&username=testuser
-```
+| Direction | Frame |
+|---|---|
+| client → server | `{"type": "join", "room_id": "general"}` |
+| | `{"type": "leave", "room_id": "general"}` |
+| | `{"type": "chat", "room_id": "general", "content": "hi", "client_message_id": "c1"}` |
+| | `{"type": "pong"}` |
+| server → client | `{"type": "welcome", "user_id": "…", "username": "…", "heartbeat_interval": 25}` |
+| | `{"type": "joined", "room_id": "general", "users": [{"user_id": "…", "username": "…"}]}` |
+| | `{"type": "message", "client_message_id": "c1", "message": {"id": 1, "room_id": "…", "user_id": "…", "username": "…", "content": "hi", "created_at": "…"}}` |
+| | `{"type": "user_joined" \| "user_left", "room_id": "…", "user": {…}}` |
+| | `{"type": "ping"}` · `{"type": "server_shutdown"}` |
+| | `{"type": "error", "code": "invalid_frame" \| "not_in_room" \| "rate_limited" \| "internal", "message": "…"}` |
 
-### Формат сообщений
+Room ids are 1–64 characters of `[a-zA-Z0-9_-]`; messages are 1–4000
+characters after trimming.
 
-**Join room:**
-```json
-{
-  "type": "join",
-  "room_id": "general"
-}
-```
-
-**Отправка сообщения:**
-```json
-{
-  "type": "chat",
-  "room_id": "general",
-  "content": "Привет, мир!"
-}
-```
-
-**Leave room:**
-```json
-{
-  "type": "leave",
-  "room_id": "general"
-}
-```
-
-**Heartbeat:**
-```json
-{
-  "type": "ping"
-}
-```
-
-### Ответы сервера
-
-**Сообщение чата:**
-```json
-{
-  "type": "chat_message",
-  "data": {
-    "room_id": "general",
-    "user_id": "123",
-    "username": "testuser",
-    "content": "Привет, мир!",
-    "timestamp": "2024-01-15T10:30:00",
-    "message_id": 1
-  }
-}
-```
-
-**Пользователь присоединился:**
-```json
-{
-  "type": "user_joined",
-  "data": {
-    "user_id": "123",
-    "username": "testuser",
-    "room_id": "general"
-  }
-}
-```
-
-**Пользователь покинул:**
-```json
-{
-  "type": "user_left",
-  "data": {
-    "user_id": "123",
-    "username": "testuser",
-    "room_id": "general"
-  }
-}
-```
+| Close code | Meaning |
+|---|---|
+| 4401 | Missing or invalid token |
+| 4429 | Too many connections for this user on this instance |
+| 4408 | No pong for two heartbeat intervals |
+| 4413 | Send queue full (client not reading) |
+| 1001 | Server shutting down |
 
 ## REST API
 
-### Получить историю сообщений
+| Method | Path | |
+|---|---|---|
+| `POST` | `/api/v1/auth/guest` | `{"username": "alice"}` → token |
+| `GET` | `/api/v1/rooms/{room_id}/messages?limit=50&before_id=…` | History, oldest first (auth) |
+| `GET` | `/api/v1/rooms/{room_id}/users` | Users online in the room (auth) |
+| `GET` | `/health`, `/ready` | Liveness; readiness checks Postgres and Redis |
+| `GET` | `/metrics` | Prometheus |
+
+Interactive docs at `/docs` when running locally.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://chat:chat@localhost:5432/chat` | |
+| `REDIS_URL` | `redis://localhost:6379/0` | |
+| `JWT_SECRET` | required | At least 32 characters |
+| `JWT_TTL_MINUTES` | `720` | Guest token lifetime |
+| `HEARTBEAT_INTERVAL` | `25` | Seconds between server pings |
+| `MAX_CONNECTIONS_PER_USER` | `5` | Per instance |
+| `SEND_QUEUE_SIZE` | `256` | Frames buffered per socket |
+| `MESSAGES_PER_SECOND` / `MESSAGE_BURST` | `5` / `10` | Per-connection chat rate limit |
+| `CORS_ORIGINS` | `[]` | JSON list, for running the client on another origin |
+| `LOG_JSON` | `true` | structlog JSON or console output |
+
+## Metrics
+
+`chat_ws_connections_active`, `chat_ws_connections_rejected_total{reason}`,
+`chat_ws_frames_received_total{type}`, `chat_messages_persisted_total`,
+`chat_messages_rate_limited_total`, `chat_ws_slow_consumer_disconnects_total`,
+`chat_ws_heartbeat_timeouts_total`, and the `chat_message_handling_seconds`
+histogram (validation, insert and publish).
+
+## Tests
 
 ```bash
-GET /api/v1/rooms/{room_id}/messages?limit=50
+pytest --cov     # 20 tests, 95% line coverage
 ```
 
-### Получить онлайн-пользователей
+- WebSocket tests open real sockets against the app with `fakeredis` and
+  SQLite: handshake auth, a message reaching members of its room and nobody
+  else, presence across two tabs, validation and protocol errors, rate
+  limiting and the per-user connection limit.
+- Two app instances sharing one fake Redis server prove that a message sent
+  to one instance reaches a client on the other.
+- Hub unit tests cover slow-consumer disconnects, heartbeat timeouts and
+  unsubscribing when the last local member leaves.
+- CI also runs the migrations up, down and up again on PostgreSQL 16 and
+  checks that the models match them (`alembic check`).
 
-```bash
-GET /api/v1/rooms/{room_id}/users
-```
+### Load test
 
-## Метрики
-
-Приложение экспортирует метрики Prometheus:
-
-- `websocket_connections_active` — количество активных соединений
-- `websocket_messages_total` — общее количество обработанных сообщений
-
-```bash
-curl http://localhost:8000/metrics
-```
-
-## Тесты
-
-### Бэкенд
-
-```bash
-make test
-```
-
-### Фронтенд (lint + type-check)
-
-```bash
-cd frontend
-bun run lint
-```
-
-## Линтинг и форматирование
-
-```bash
-make lint
-make format
-```
-
-## CI / CD
-
-В `.github/workflows/` два workflow:
-
-### `backend-ci.yml`
-
-Срабатывает на push/PR в `main` и на изменения в `app/**`, `tests/**`,
-`migrations/**`, `pyproject.toml`, `requirements-dev.txt`. Запускает:
-- Установка Python 3.12 + Postgres 15 + Redis 7 services
-- Установка зависимостей (`pip install -r requirements-dev.txt`)
-- Ruff lint
-- Mypy type-check
-- pytest с покрытием
-- Загрузка покрытия в Codecov (опционально, нужен `CODECOV_TOKEN` secret)
-
-### `frontend-ci.yml`
-
-Срабатывает на push/PR в `main` и на изменения в `frontend/**`. Запускает:
-- Установка Bun
-- `bun install`
-- `bun run lint` (ESLint)
-- `tsc --noEmit` (type-check)
-- `bun run build`
-
-Оба workflow поддерживают `workflow_dispatch` для ручного запуска из
-вкладки Actions. Бейджи CI — вверху этого файла.
-
-## Конфигурация
-
-Переменные окружения (или файл `.env`):
-
-| Переменная | По умолчанию | Описание |
-|------------|--------------|----------|
-| POSTGRES_HOST | localhost | Хост PostgreSQL |
-| POSTGRES_PORT | 5432 | Порт PostgreSQL |
-| POSTGRES_USER | postgres | Пользователь БД |
-| POSTGRES_PASSWORD | postgres | Пароль БД |
-| POSTGRES_DB | chat_db | Имя БД |
-| REDIS_HOST | localhost | Хост Redis |
-| REDIS_PORT | 6379 | Порт Redis |
-| JWT_SECRET_KEY | - | Секретный ключ JWT |
-| DEBUG | false | Режим отладки |
-
-### Переменные фронтенда
-
-| Переменная | По умолчанию | Описание |
-|------------|--------------|----------|
-| NEXT_PUBLIC_CHAT_MODE | `demo` | `demo` (TS-адаптер) или `backend` (реальный FastAPI) |
-| NEXT_PUBLIC_CHAT_API_BASE | `http://localhost:8000` | URL бэкенда (только в `backend` режиме) |
-
-## Архитектура
-
-Подробная схема — в самом приложении: кнопка `ⓘ` ("How this works") в
-шапке чата. Кратко:
+`scripts/loadtest.py` connects N clients to one room across the given
+instances and measures the time from sending a message to each client
+receiving it. On a 2-vCPU VM with both instances, Postgres, Redis and the
+load generator on the same machine:
 
 ```
-┌─────────────┐       ws        ┌──────────────┐
-│  Next.js    │ ──────────────► │   FastAPI    │
-│  Frontend   │ ◄────────────── │   Backend    │
-│ (this app)  │    broadcasts   │ (websocket)  │
-└─────────────┘                 └──────┬───────┘
-                                       │ pub/sub
-                                       ▼
-                                ┌──────────────┐
-                                │    Redis     │
-                                │   Pub/Sub    │
-                                └──────┬───────┘
-                                       │ fan-out
-                  ┌────────────────────┴────────────────────┐
-                  ▼                                         ▼
-            other FastAPI                              PostgreSQL
-            instances                                  (history)
+$ python scripts/loadtest.py --clients 200 --messages 50 http://localhost:18001 http://localhost:18002
+200 clients on 2 instance(s), 50 messages
+deliveries: 10000 in 10.1s
+latency ms: p50 12.3  p95 18.0  p99 156.1  max 169.4
 ```
 
-## Лицензия
+p99 varies between runs (150–250 ms) because everything shares two CPUs.
+
+## Limitations
+
+- Guest accounts only; there are no passwords or room permissions.
+- If an instance crashes without shutting down, the presence entries of its
+  clients stay in Redis until those users reconnect and leave. Expiring
+  per-instance presence keys would fix this.
+- The connection limit per user is enforced per instance.
+
+## License
 
 MIT
