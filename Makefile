@@ -1,31 +1,27 @@
-.PHONY: up down restart logs test lint format migrate
-
-up:
-	docker-compose up -d
-
-down:
-	docker-compose down
-
-restart:
-	docker-compose restart
-
-logs:
-	docker-compose logs -f app
-
-test:
-	pytest -v --cov=app --cov-report=term-missing
-
-lint:
-	ruff check app tests
-
-format:
-	ruff format app tests
-
-migrate:
-	alembic upgrade head
+.PHONY: install test lint up down migrate dev loadtest
 
 install:
 	pip install -e ".[dev]"
 
-run:
-	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+test:
+	pytest --cov --cov-report=term-missing
+
+lint:
+	ruff check app tests
+	ruff format --check app tests
+	mypy app
+
+up:
+	docker compose up --build
+
+down:
+	docker compose down
+
+migrate:
+	alembic upgrade head
+
+dev:
+	uvicorn --factory app.main:create_app --reload --port 8000
+
+loadtest:
+	python scripts/loadtest.py --clients 200 --messages 50 http://localhost:8080
