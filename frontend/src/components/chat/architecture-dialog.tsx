@@ -68,10 +68,8 @@ export function ArchitectureDialog({ open, onOpenChange, metrics }: Architecture
             instances                                  (history)`}
               </pre>
               <p className="mt-2 text-xs text-muted-foreground">
-                In this live demo, the FastAPI box is replaced by a TypeScript
-                adapter (<code className="font-mono">mini-services/chat-backend</code>) that
-                speaks the same protocol — the frontend doesn&apos;t know the
-                difference.
+                Each backend instance holds one Redis subscription per room that has
+                local members and fans messages out to its own sockets.
               </p>
             </section>
 
@@ -96,12 +94,12 @@ export function ArchitectureDialog({ open, onOpenChange, metrics }: Architecture
                 <ProtocolRow
                   dir="s2c"
                   label="Broadcast a message"
-                  payload={`{ "type": "chat_message", "data": { "room_id": "…", "user_id": "…", "username": "…", "content": "…", "timestamp": "…", "message_id": 1 } }`}
+                  payload={`{ "type": "message", "client_message_id": "…", "message": { "id": 1, "room_id": "…", "user_id": "…", "username": "…", "content": "…", "created_at": "…" } }`}
                 />
                 <ProtocolRow
                   dir="s2c"
                   label="User joined / left"
-                  payload={`{ "type": "user_joined" | "user_left", "data": { "user_id": "…", "username": "…", "room_id": "…" } }`}
+                  payload={`{ "type": "user_joined" | "user_left", "room_id": "…", "user": { "user_id": "…", "username": "…" } }`}
                 />
               </div>
             </section>
@@ -111,23 +109,23 @@ export function ArchitectureDialog({ open, onOpenChange, metrics }: Architecture
               <ul className="space-y-3 text-sm text-muted-foreground">
                 <TalkingPoint
                   title="Why Redis Pub/Sub?"
-                  body="So you can run multiple FastAPI instances behind a load balancer. When a user connects to instance A and sends a message, instance B's users still get it because A publishes to Redis and B's subscribers deliver to their local sockets."
+                  body="So several FastAPI instances can serve the same rooms. Instance A stores a message and publishes it to the room's channel; every instance subscribed to that channel (only those with members in the room) delivers it to its local sockets."
                 />
                 <TalkingPoint
                   title="How does the client stay alive?"
-                  body="The backend sends an app-level ping every WS_HEARTBEAT_INTERVAL (30s) and expects a pong. If it doesn't get one for 2× the interval, it closes the socket. The frontend mirrors this — sends its own ping every 25s and auto-reconnects with exponential backoff (250ms → 500ms → … → 8s cap)."
+                  body="The server sends a ping every 25 s and closes sockets that stay silent for two intervals. The client answers pings, reconnects with exponential backoff (250 ms up to 8 s) and rejoins its rooms after a reconnect."
                 />
                 <TalkingPoint
-                  title="Why does the online list show user_ids, not names?"
-                  body="Because that's what the backend's REST endpoint returns (RoomUsersResponse in app/schemas/rest.py). To show usernames we'd need either to expand the schema or to maintain a local id→name map from the WS broadcasts. Right now we do the latter on the fly."
+                  title="How is presence counted?"
+                  body="Redis keeps, per room, a hash of user id to open connection count. A user with two tabs stays online until both close; the decrement-and-delete runs as one Lua script so two instances cannot race."
                 />
                 <TalkingPoint
                   title="Is the message content sanitized?"
-                  body="The backend stores content as-is (Text column). The frontend renders it as plain text with whitespace-pre-wrap — no HTML, no markdown. That's a deliberate choice to avoid XSS in a demo; in production you'd want server-side sanitization too."
+                  body="Content is validated (1–4000 characters) and stored as plain text. The frontend renders it as text, never as HTML, so there is nothing to sanitize on the way out."
                 />
                 <TalkingPoint
                   title="What's missing for a real product?"
-                  body="Auth (JWT helpers exist but aren't wired into the WS endpoint), real cursor-based pagination for history, typing indicators, file uploads, per-room settings, presence (away/idle), and tests on the frontend."
+                  body="Accounts with passwords or OAuth (guests only for now), room permissions, typing indicators, read receipts, and expiring presence for instances that crash without cleaning up."
                 />
               </ul>
             </section>

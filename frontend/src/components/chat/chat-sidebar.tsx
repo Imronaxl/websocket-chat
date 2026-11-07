@@ -6,14 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { SUGGESTED_ROOMS_LIST } from "@/hooks/use-chat-state";
+import { SUGGESTED_ROOMS } from "@/lib/chat-config";
+import type { OnlineUser } from "@/lib/chat-types";
 import { UserAvatar } from "./user-avatar";
 
 interface ChatSidebarProps {
   currentUserId: string;
   joinedRooms: string[];
   activeRoomId: string | null;
-  onlineUsersByRoom: Record<string, string[]>;
+  onlineUsersByRoom: Record<string, OnlineUser[]>;
   onJoinRoom: (roomId: string) => void;
   onLeaveRoom: (roomId: string) => void;
   onSwitchRoom: (roomId: string) => void;
@@ -29,12 +30,18 @@ export function ChatSidebar({
   onSwitchRoom,
 }: ChatSidebarProps) {
   const [newRoomInput, setNewRoomInput] = useState("");
-  const suggestedNotJoined = SUGGESTED_ROOMS_LIST.filter((r) => !joinedRooms.includes(r));
+  const suggestedNotJoined = SUGGESTED_ROOMS.filter((r) => !joinedRooms.includes(r));
   const onlineUsers = activeRoomId ? onlineUsersByRoom[activeRoomId] ?? [] : [];
 
   const handleCreateRoom = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = newRoomInput.trim().toLowerCase().replace(/\s+/g, "-");
+    // Room ids are limited to letters, digits, "_" and "-" (see app/schemas.py).
+    const trimmed = newRoomInput
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "")
+      .slice(0, 64);
     if (!trimmed) return;
     onJoinRoom(trimmed);
     setNewRoomInput("");
@@ -106,7 +113,7 @@ export function ChatSidebar({
             ))}
           </ul>
         ) : (
-          <p className="mb-2 px-1 text-xs text-muted-foreground">You've joined all suggested rooms.</p>
+          <p className="mb-2 px-1 text-xs text-muted-foreground">You&apos;ve joined all suggested rooms.</p>
         )}
         <form onSubmit={handleCreateRoom} className="flex gap-2">
           <Input
@@ -129,24 +136,24 @@ export function ChatSidebar({
           Online — {activeRoomId ? `#${activeRoomId}` : "no room"}
         </h2>
         {!activeRoomId ? (
-          <p className="px-1 text-sm text-muted-foreground">Pick a room to see who's online.</p>
+          <p className="px-1 text-sm text-muted-foreground">Pick a room to see who&apos;s online.</p>
         ) : onlineUsers.length === 0 ? (
           <p className="px-1 text-sm text-muted-foreground">Nobody here yet.</p>
         ) : (
           <ScrollArea className="flex-1">
             <ul className="space-y-1 pr-2">
-              {onlineUsers.map((userId) => {
-                const isMe = userId === currentUserId;
+              {onlineUsers.map((user) => {
+                const isMe = user.user_id === currentUserId;
                 return (
                   <li
-                    key={userId}
+                    key={user.user_id}
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1 text-sm",
                       isMe && "bg-primary/5",
                     )}
                   >
-                    <UserAvatar username={userId.replace(/^u-/, "")} size="sm" />
-                    <span className="truncate text-foreground">{userId.replace(/^u-/, "")}</span>
+                    <UserAvatar username={user.username} size="sm" />
+                    <span className="truncate text-foreground">{user.username}</span>
                     {isMe && (
                       <span className="ml-auto rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                         you

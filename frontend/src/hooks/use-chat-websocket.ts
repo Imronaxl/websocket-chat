@@ -1,172 +1,122 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { buildWsUrl, CHAT_CONFIG } from "@/lib/chat-config";
-import { buildPing, buildPong } from "@/lib/chat-protocol";
+import { CHAT_CONFIG, FATAL_CLOSE_CODES, wsUrl } from "@/lib/chat-config";
+import { buildPong } from "@/lib/chat-protocol";
 import type { ClientMessage, ConnectionStatus, ServerMessage } from "@/lib/chat-types";
 
 interface UseChatWebSocketArgs {
-  userId: string | null;
-  username: string | null;
+  token: string | null;
   onMessage: (msg: ServerMessage) => void;
   onStatusChange?: (status: ConnectionStatus) => void;
+  onFatalClose?: (code: number) => void;
 }
 
 interface UseChatWebSocketReturn {
   status: ConnectionStatus;
   send: (msg: ClientMessage) => boolean;
-  close: () => void;
   reconnect: () => void;
 }
 
+/**
+ * Keeps one socket open while a token is set. Answers server pings, and
+ * reconnects with exponential backoff unless the server rejected the token.
+ */
 export function useChatWebSocket({
-  userId,
-  username,
+  token,
   onMessage,
   onStatusChange,
+  onFatalClose,
 }: UseChatWebSocketArgs): UseChatWebSocketReturn {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
 
   const socketRef = useRef<WebSocket | null>(null);
-  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
   const manualCloseRef = useRef(false);
+  const connectRef = useRef<() => void>(() => {});
 
-  const onMessageRef = useRef(onMessage);
+  const handlers = useRef({ onMessage, onStatusChange, onFatalClose });
   useEffect(() => {
-    onMessageRef.current = onMessage;
-  }, [onMessage]);
-
-  const onStatusChangeRef = useRef(onStatusChange);
-  useEffect(() => {
-    onStatusChangeRef.current = onStatusChange;
-  }, [onStatusChange]);
+    handlers.current = { onMessage, onStatusChange, onFatalClose };
+  }, [onMessage, onStatusChange, onFatalClose]);
 
   const updateStatus = useCallback((next: ConnectionStatus) => {
     setStatus(next);
-    onStatusChangeRef.current?.(next);
+    handlers.current.onStatusChange?.(next);
   }, []);
 
-  const clearTimers = useCallback(() => {
-    if (heartbeatTimerRef.current) {
-      clearInterval(heartbeatTimerRef.current);
-      heartbeatTimerRef.current = null;
-    }
+  const clearReconnect = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
   }, []);
 
-  const connectRef = useRef<() => void>(() => {});
-
   const connect = useCallback(() => {
-    if (!userId || !username) return;
-    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) {
-      return;
-    }
+    if (!token) return;
+    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return;
 
     manualCloseRef.current = false;
-    queueMicrotask(() => {
-      updateStatus(attemptRef.current === 0 ? "connecting" : "reconnecting");
-    });
+    updateStatus(attemptRef.current === 0 ? "connecting" : "reconnecting");
 
-    const openSocket = () => {
-      const url = buildWsUrl({ userId, username });
-      const socket = new WebSocket(url);
-      socketRef.current = socket;
+    const socket = new WebSocket(wsUrl(token));
+    socketRef.current = socket;
 
-      socket.onopen = () => {
-        attemptRef.current = 0;
-        updateStatus("connected");
-
-        if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
-        heartbeatTimerRef.current = setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify(buildPing()));
-          }
-        }, CHAT_CONFIG.heartbeatIntervalMs);
-      };
-
-      socket.onmessage = (event) => {
-        let parsed: ServerMessage;
-        try {
-          parsed = JSON.parse(event.data) as ServerMessage;
-        } catch {
-          if (typeof event.data === "string") {
-            onMessageRef.current({ type: "error", data: event.data });
-          }
-          return;
-        }
-        if (parsed.type === "ping") {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify(buildPong(Date.now())));
-          }
-          return;
-        }
-        onMessageRef.current(parsed);
-      };
-
-      socket.onerror = () => {
-        updateStatus("reconnecting");
-      };
-
-      socket.onclose = () => {
-        clearTimers();
-        socketRef.current = null;
-
-        if (manualCloseRef.current) {
-          updateStatus("disconnected");
-          return;
-        }
-
-        attemptRef.current += 1;
-        if (attemptRef.current > CHAT_CONFIG.reconnectMaxAttempts) {
-          updateStatus("error");
-          return;
-        }
-
-        const delay = Math.min(
-          250 * 2 ** (attemptRef.current - 1),
-          CHAT_CONFIG.reconnectMaxDelayMs,
-        );
-        updateStatus("reconnecting");
-        reconnectTimerRef.current = setTimeout(() => {
-          connectRef.current();
-        }, delay);
-      };
+    socket.onopen = () => {
+      attemptRef.current = 0;
+      updateStatus("connected");
     };
 
-    if (CHAT_CONFIG.isDemo) {
-      fetch("/api/v1/internal/ensure-backend", { cache: "no-store" })
-        .catch(() => null)
-        .finally(() => openSocket());
-    } else {
-      openSocket();
-    }
-  }, [userId, username, updateStatus, clearTimers]);
+    socket.onmessage = (event) => {
+      let frame: ServerMessage;
+      try {
+        frame = JSON.parse(event.data as string) as ServerMessage;
+      } catch {
+        return;
+      }
+      if (frame.type === "ping") {
+        socket.send(JSON.stringify(buildPong()));
+        return;
+      }
+      handlers.current.onMessage(frame);
+    };
+
+    socket.onclose = (event) => {
+      socketRef.current = null;
+      if (manualCloseRef.current) {
+        updateStatus("disconnected");
+        return;
+      }
+      if (FATAL_CLOSE_CODES.has(event.code)) {
+        updateStatus("error");
+        handlers.current.onFatalClose?.(event.code);
+        return;
+      }
+      attemptRef.current += 1;
+      if (attemptRef.current > CHAT_CONFIG.reconnectMaxAttempts) {
+        updateStatus("error");
+        return;
+      }
+      const delay = Math.min(250 * 2 ** (attemptRef.current - 1), CHAT_CONFIG.reconnectMaxDelayMs);
+      updateStatus("reconnecting");
+      reconnectTimerRef.current = setTimeout(() => connectRef.current(), delay);
+    };
+  }, [token, updateStatus]);
 
   useEffect(() => {
     connectRef.current = connect;
   }, [connect]);
 
   useEffect(() => {
-    if (userId && username) {
-      connect();
-    }
+    if (token) connect();
     return () => {
       manualCloseRef.current = true;
-      clearTimers();
-      if (socketRef.current) {
-        try {
-          socketRef.current.close(1000, "client_unmount");
-        } catch {
-        }
-        socketRef.current = null;
-      }
+      clearReconnect();
+      socketRef.current?.close(1000, "client closed");
+      socketRef.current = null;
     };
-  }, [userId, username, connect, clearTimers]);
+  }, [token, connect, clearReconnect]);
 
   const send = useCallback((msg: ClientMessage): boolean => {
     const socket = socketRef.current;
@@ -175,31 +125,15 @@ export function useChatWebSocket({
     return true;
   }, []);
 
-  const close = useCallback(() => {
-    manualCloseRef.current = true;
-    clearTimers();
-    if (socketRef.current) {
-      try {
-        socketRef.current.close(1000, "client_logout");
-      } catch {
-      }
-      socketRef.current = null;
-    }
-    updateStatus("disconnected");
-  }, [clearTimers, updateStatus]);
-
   const reconnect = useCallback(() => {
     attemptRef.current = 0;
-    manualCloseRef.current = false;
+    clearReconnect();
     if (socketRef.current) {
-      try {
-        socketRef.current.close();
-      } catch {
-      }
+      socketRef.current.close();
     } else {
       connect();
     }
-  }, [connect]);
+  }, [connect, clearReconnect]);
 
-  return { status, send, close, reconnect };
+  return { status, send, reconnect };
 }

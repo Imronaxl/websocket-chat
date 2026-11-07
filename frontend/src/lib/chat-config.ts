@@ -1,33 +1,42 @@
-const isDemo = process.env.NEXT_PUBLIC_CHAT_MODE === "backend" ? false : true;
+import type { Session, TokenResponse } from "./chat-types";
 
-const DEMO_PORT = 3003;
+// Empty means "same origin": in Docker Compose nginx serves the UI and the API
+// on one host. For `bun run dev` set NEXT_PUBLIC_API_URL=http://localhost:8000.
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 
-export function buildWsUrl(params: { userId: string; username: string }): string {
-  const query = new URLSearchParams({
-    user_id: params.userId,
-    username: params.username,
-  });
-  if (isDemo) {
-    query.set("XTransformPort", String(DEMO_PORT));
-  }
-  const proto = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
-  const host = typeof window !== "undefined" ? window.location.host : "localhost";
-  return `${proto}://${host}/api/v1/ws?${query.toString()}`;
+export function apiUrl(path: string): string {
+  return `${API_URL}${path}`;
 }
 
-export function buildRestUrl(path: string): string {
-  if (!isDemo) return path;
-  const sep = path.includes("?") ? "&" : "?";
-  return `${path}${sep}XTransformPort=${DEMO_PORT}`;
+export function wsUrl(token: string): string {
+  const base = API_URL || window.location.origin;
+  return `${base.replace(/^http/, "ws")}/api/v1/ws?token=${encodeURIComponent(token)}`;
+}
+
+export function authHeaders(session: Session): HeadersInit {
+  return { Authorization: `Bearer ${session.token}` };
+}
+
+export async function guestLogin(username: string): Promise<Session> {
+  const res = await fetch(apiUrl("/api/v1/auth/guest"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+  if (!res.ok) {
+    throw new Error(res.status === 422 ? "Use letters, digits, spaces, dots or dashes" : `Login failed (${res.status})`);
+  }
+  const data = (await res.json()) as TokenResponse;
+  return { token: data.access_token, userId: data.user_id, username: data.username };
 }
 
 export const CHAT_CONFIG = {
-  isDemo,
-  apiPrefix: "/api/v1",
   messagePageSize: 50,
-  heartbeatIntervalMs: 25_000,
   reconnectMaxDelayMs: 8_000,
   reconnectMaxAttempts: 10,
 } as const;
+
+// Close codes after which reconnecting cannot help (see app/api/ws.py).
+export const FATAL_CLOSE_CODES = new Set([4401, 4429]);
 
 export const SUGGESTED_ROOMS = ["general", "random", "tech", "music"] as const;

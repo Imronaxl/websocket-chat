@@ -1,83 +1,14 @@
-export type ClientMessage =
-  | JoinRoomMessage
-  | LeaveRoomMessage
-  | ChatMessage
-  | PingMessage
-  | PongMessage;
+// Mirrors app/schemas.py and the frames sent by app/hub.py.
 
-export interface JoinRoomMessage {
-  type: "join";
-  room_id: string;
+export interface Session {
+  token: string;
+  userId: string;
+  username: string;
 }
 
-export interface LeaveRoomMessage {
-  type: "leave";
-  room_id: string;
-}
-
-export interface ChatMessage {
-  type: "chat";
-  room_id: string;
-  content: string;
-  client_message_id?: string;
-}
-
-export interface PingMessage {
-  type: "ping";
-  timestamp?: number;
-}
-
-export interface PongMessage {
-  type: "pong";
-  timestamp: number;
-}
-
-export type ServerMessage =
-  | ChatMessageBroadcast
-  | UserJoinedBroadcast
-  | UserLeftBroadcast
-  | PongMessage
-  | PingMessage
-  | ErrorMessage
-  | ServerShutdownMessage;
-
-export interface ChatMessageBroadcast {
-  type: "chat_message";
-  data: {
-    room_id: string;
-    user_id: string;
-    username: string;
-    content: string;
-    timestamp: string;
-    message_id: number;
-  };
-}
-
-export interface UserJoinedBroadcast {
-  type: "user_joined";
-  data: {
-    user_id: string;
-    username: string;
-    room_id: string;
-  };
-}
-
-export interface UserLeftBroadcast {
-  type: "user_left";
-  data: {
-    user_id: string;
-    username: string;
-    room_id: string;
-  };
-}
-
-export interface ErrorMessage {
-  type: "error";
-  data: string;
-}
-
-export interface ServerShutdownMessage {
-  type: "server_shutdown";
+export interface OnlineUser {
+  user_id: string;
+  username: string;
 }
 
 export interface MessageResponse {
@@ -89,10 +20,33 @@ export interface MessageResponse {
   created_at: string;
 }
 
-export interface RoomUsersResponse {
-  room_id: string;
-  online_users: string[];
+export interface TokenResponse {
+  access_token: string;
+  token_type: "bearer";
+  user_id: string;
+  username: string;
+  expires_at: string;
 }
+
+// client -> server
+
+export type ClientMessage =
+  | { type: "join"; room_id: string }
+  | { type: "leave"; room_id: string }
+  | { type: "chat"; room_id: string; content: string; client_message_id?: string }
+  | { type: "pong" };
+
+// server -> client
+
+export type ServerMessage =
+  | { type: "welcome"; user_id: string; username: string; heartbeat_interval: number }
+  | { type: "joined"; room_id: string; users: OnlineUser[] }
+  | { type: "message"; client_message_id: string | null; message: MessageResponse }
+  | { type: "user_joined"; room_id: string; user: OnlineUser }
+  | { type: "user_left"; room_id: string; user: OnlineUser }
+  | { type: "ping" }
+  | { type: "error"; code: string; message: string }
+  | { type: "server_shutdown" };
 
 export type ChatLogEntry =
   | { kind: "message"; message: MessageResponse }

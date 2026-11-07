@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { guestLogin } from "@/lib/chat-config";
+import type { Session } from "@/lib/chat-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,21 +11,29 @@ import { UserAvatar } from "./user-avatar";
 import { Github, Sparkles, Zap } from "lucide-react";
 
 interface LoginScreenProps {
-  onLogin: (params: { userId: string; username: string }) => void;
+  onLogin: (session: Session) => void;
 }
 
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [username, setUsername] = useState("");
   const [touched, setTouched] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const isValid = username.trim().length >= 2 && username.trim().length <= 32;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
-    if (!isValid) return;
-    const trimmed = username.trim();
-    const userId = `u-${trimmed.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
-    onLogin({ userId, username: trimmed });
+    if (!isValid || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      onLogin(await guestLogin(username.trim()));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reach the server");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -41,7 +51,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         <div className="hidden flex-col gap-6 lg:flex">
           <div className="inline-flex w-fit items-center gap-2 rounded-full border border-border bg-background/60 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
             <Sparkles className="h-3.5 w-3.5" />
-            Portfolio demo · FastAPI + Next.js
+            FastAPI · Redis · PostgreSQL · Next.js
           </div>
           <h1 className="text-4xl font-bold tracking-tight text-foreground">
             Real-time chat
@@ -49,15 +59,14 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
             <span className="text-primary">over WebSocket + Redis Pub/Sub</span>
           </h1>
           <p className="max-w-md text-muted-foreground">
-            A small chat application built on top of a FastAPI backend —
-            WebSocket transport, PostgreSQL for history, Redis Pub/Sub for
-            multi-instance fan-out. This frontend talks the exact same protocol
-            the Python backend speaks.
+            A chat server built on FastAPI WebSockets. Messages are stored in
+            PostgreSQL and fanned out through Redis Pub/Sub, so any number of
+            backend instances can serve the same rooms.
           </p>
           <ul className="space-y-3 text-sm">
-            <FeatureRow icon={<Zap className="h-4 w-4" />} text="Heartbeat + auto-reconnect with exponential backoff" />
-            <FeatureRow icon={<Zap className="h-4 w-4" />} text="Room join / leave, online users, message history" />
-            <FeatureRow icon={<Zap className="h-4 w-4" />} text="Dark / light theme, keyboard-first UX" />
+            <FeatureRow icon={<Zap className="h-4 w-4" />} text="Server heartbeats, reconnect with exponential backoff" />
+            <FeatureRow icon={<Zap className="h-4 w-4" />} text="Rooms, presence across tabs and instances, paged history" />
+            <FeatureRow icon={<Zap className="h-4 w-4" />} text="JWT-authenticated sockets, per-connection rate limits" />
           </ul>
         </div>
 
@@ -67,7 +76,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
               <Github className="h-6 w-6" />
             </div>
             <CardTitle className="text-2xl">Join the chat</CardTitle>
-            <CardDescription>Pick a display name to enter. No password — this is a demo.</CardDescription>
+            <CardDescription>Pick a display name. Guest accounts have no password.</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -94,12 +103,12 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
                   </p>
                 )}
               </div>
-              <Button type="submit" className="w-full" disabled={!isValid}>
-                Enter chat
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <Button type="submit" className="w-full" disabled={!isValid || submitting}>
+                {submitting ? "Signing in…" : "Enter chat"}
               </Button>
               <p className="text-center text-xs text-muted-foreground">
-                By entering you connect to <code className="font-mono">/api/v1/ws</code> via the
-                Caddy gateway.
+                The server issues a signed guest token; your id comes from it, not from this form.
               </p>
             </form>
           </CardContent>

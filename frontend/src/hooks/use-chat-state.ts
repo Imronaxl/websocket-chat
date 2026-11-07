@@ -3,20 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChatWebSocket } from "@/hooks/use-chat-websocket";
 import { buildChat, buildJoin, buildLeave } from "@/lib/chat-protocol";
-import { buildRestUrl, CHAT_CONFIG, SUGGESTED_ROOMS } from "@/lib/chat-config";
+import { apiUrl, authHeaders, CHAT_CONFIG } from "@/lib/chat-config";
 import type {
   ChatLogEntry,
-  ClientMessage,
   ConnectionStatus,
   MessageResponse,
-  RoomUsersResponse,
+  OnlineUser,
   ServerMessage,
+  Session,
 } from "@/lib/chat-types";
 
-interface UseChatStateArgs {
-  userId: string | null;
-  username: string | null;
-}
+type HistoryStatus = "idle" | "loading" | "loaded" | "exhausted";
 
 interface UseChatStateReturn {
   status: ConnectionStatus;
@@ -29,177 +26,185 @@ interface UseChatStateReturn {
   logByRoom: Record<string, ChatLogEntry[]>;
   sendMessage: (content: string) => void;
   loadMoreHistory: (roomId: string) => Promise<void>;
-  historyStatusByRoom: Record<string, "idle" | "loading" | "loaded" | "exhausted">;
-  onlineUsersByRoom: Record<string, string[]>;
-  metrics: {
-    messagesSent: number;
-    messagesReceived: number;
-    reconnectCount: number;
-  };
+  historyStatusByRoom: Record<string, HistoryStatus>;
+  onlineUsersByRoom: Record<string, OnlineUser[]>;
+  metrics: { messagesSent: number; messagesReceived: number; reconnectCount: number };
 }
 
-export function useChatState({ userId, username }: UseChatStateArgs): UseChatStateReturn {
+const MAX_ENTRIES = 500;
+
+export function useChatState(session: Session | null, onSessionExpired: () => void): UseChatStateReturn {
   const [joinedRooms, setJoinedRooms] = useState<string[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [logByRoom, setLogByRoom] = useState<Record<string, ChatLogEntry[]>>({});
-  const [onlineUsersByRoom, setOnlineUsersByRoom] = useState<Record<string, string[]>>({});
-  const [historyStatusByRoom, setHistoryStatusByRoom] = useState<
-    Record<string, "idle" | "loading" | "loaded" | "exhausted">
-  >({});
+  const [onlineUsersByRoom, setOnlineUsersByRoom] = useState<Record<string, OnlineUser[]>>({});
+  const [historyStatusByRoom, setHistoryStatusByRoom] = useState<Record<string, HistoryStatus>>({});
   const [metrics, setMetrics] = useState({ messagesSent: 0, messagesReceived: 0, reconnectCount: 0 });
-  const prevStatusRef = useRef<ConnectionStatus | null>(null);
 
   const joinedRoomsRef = useRef<string[]>([]);
-  const sendRef = useRef<(msg: ClientMessage) => boolean>(() => false);
-
-  const appendEntry = useCallback((roomId: string, entry: ChatLogEntry) => {
-    setLogByRoom((prev) => {
-      const list = prev[roomId] ?? [];
-      const next = list.length >= 500 ? [...list.slice(-499), entry] : [...list, entry];
-      return { ...prev, [roomId]: next };
-    });
-  }, []);
-
-  const refreshOnlineUsers = useCallback(async (roomId: string) => {
-    try {
-      const res = await fetch(buildRestUrl(`/api/v1/rooms/${encodeURIComponent(roomId)}/users`));
-      if (!res.ok) return;
-      const data = (await res.json()) as RoomUsersResponse;
-      setOnlineUsersByRoom((prev) => ({ ...prev, [roomId]: data.online_users ?? [] }));
-    } catch {
-    }
-  }, []);
-
-  const loadHistory = useCallback(async (roomId: string) => {
-    try {
-      const res = await fetch(
-        buildRestUrl(
-          `/api/v1/rooms/${encodeURIComponent(roomId)}/messages?limit=${CHAT_CONFIG.messagePageSize}`,
-        ),
-      );
-      if (!res.ok) return;
-      const messages = (await res.json()) as MessageResponse[];
-      const entries: ChatLogEntry[] = messages.map((m) => ({ kind: "message", message: m }));
-      setLogByRoom((prev) => ({ ...prev, [roomId]: entries }));
-      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "loaded" }));
-    } catch {
-      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "loaded" }));
-    }
-  }, []);
-
-  const handleMessage = useCallback(
-    (msg: ServerMessage) => {
-      setMetrics((prev) => ({ ...prev, messagesReceived: prev.messagesReceived + 1 }));
-
-      switch (msg.type) {
-        case "chat_message": {
-          const { room_id, user_id, username: fromUsername, content, timestamp, message_id } =
-            msg.data;
-          appendEntry(room_id, {
-            kind: "message",
-            message: {
-              id: message_id,
-              room_id,
-              user_id,
-              username: fromUsername,
-              content,
-              created_at: timestamp,
-            },
-          });
-          break;
-        }
-        case "user_joined": {
-          const { room_id, user_id, username: joinedUsername } = msg.data;
-          appendEntry(room_id, {
-            kind: "user_joined",
-            room_id,
-            user_id,
-            username: joinedUsername,
-            at: new Date().toISOString(),
-          });
-          void refreshOnlineUsers(room_id);
-          break;
-        }
-        case "user_left": {
-          const { room_id, user_id, username: leftUsername } = msg.data;
-          appendEntry(room_id, {
-            kind: "user_left",
-            room_id,
-            user_id,
-            username: leftUsername,
-            at: new Date().toISOString(),
-          });
-          void refreshOnlineUsers(room_id);
-          break;
-        }
-        case "error": {
-          if (activeRoomId) {
-            appendEntry(activeRoomId, {
-              kind: "system",
-              content: `Error: ${msg.data}`,
-              at: new Date().toISOString(),
-            });
-          }
-          break;
-        }
-        case "server_shutdown": {
-          if (activeRoomId) {
-            appendEntry(activeRoomId, {
-              kind: "system",
-              content: "Server is shutting down. Reconnecting…",
-              at: new Date().toISOString(),
-            });
-          }
-          break;
-        }
-        case "ping":
-        case "pong":
-          break;
-      }
-    },
-    [activeRoomId, appendEntry, refreshOnlineUsers],
-  );
-
-  const handleStatusChange = useCallback(
-    (status: ConnectionStatus) => {
-      setMetrics((prev) => {
-        if (status === "reconnecting" && prevStatusRef.current !== "reconnecting") {
-          return { ...prev, reconnectCount: prev.reconnectCount + 1 };
-        }
-        return prev;
-      });
-      prevStatusRef.current = status;
-
-      if (status !== "connected") return;
-
-      const previouslyJoined = joinedRoomsRef.current;
-      if (previouslyJoined.length === 0) {
-        const room = "general";
-        setJoinedRooms((prev) => (prev.includes(room) ? prev : [...prev, room]));
-        setActiveRoomId((prev) => prev ?? room);
-        sendRef.current(buildJoin(room));
-        void loadHistory(room);
-        void refreshOnlineUsers(room);
-        setHistoryStatusByRoom((prev) => ({ ...prev, [room]: prev[room] ?? "idle" }));
-      } else {
-        for (const room of previouslyJoined) {
-          sendRef.current(buildJoin(room));
-          void refreshOnlineUsers(room);
-        }
-      }
-    },
-    [loadHistory, refreshOnlineUsers],
-  );
+  const activeRoomRef = useRef<string | null>(null);
+  const logRef = useRef<Record<string, ChatLogEntry[]>>({});
+  const prevStatusRef = useRef<ConnectionStatus | null>(null);
+  const sendRef = useRef<ReturnType<typeof useChatWebSocket>["send"]>(() => false);
 
   useEffect(() => {
     joinedRoomsRef.current = joinedRooms;
   }, [joinedRooms]);
+  useEffect(() => {
+    activeRoomRef.current = activeRoomId;
+  }, [activeRoomId]);
+  useEffect(() => {
+    logRef.current = logByRoom;
+  }, [logByRoom]);
 
-  const { status, send, close, reconnect } = useChatWebSocket({
-    userId,
-    username,
+  const appendEntry = useCallback((roomId: string, entry: ChatLogEntry) => {
+    setLogByRoom((prev) => {
+      const list = prev[roomId] ?? [];
+      // A broadcast can arrive while history for the same message is loading.
+      if (entry.kind === "message" && list.some((e) => e.kind === "message" && e.message.id === entry.message.id)) {
+        return prev;
+      }
+      return { ...prev, [roomId]: [...list, entry].slice(-MAX_ENTRIES) };
+    });
+  }, []);
+
+  const systemNote = useCallback(
+    (content: string) => {
+      const room = activeRoomRef.current;
+      if (room) appendEntry(room, { kind: "system", content, at: new Date().toISOString() });
+    },
+    [appendEntry],
+  );
+
+  const fetchHistory = useCallback(
+    async (roomId: string, beforeId?: number): Promise<MessageResponse[] | null> => {
+      if (!session) return null;
+      const params = new URLSearchParams({ limit: String(CHAT_CONFIG.messagePageSize) });
+      if (beforeId) params.set("before_id", String(beforeId));
+      const res = await fetch(apiUrl(`/api/v1/rooms/${encodeURIComponent(roomId)}/messages?${params}`), {
+        headers: authHeaders(session),
+      });
+      if (res.status === 401) onSessionExpired();
+      return res.ok ? ((await res.json()) as MessageResponse[]) : null;
+    },
+    [session, onSessionExpired],
+  );
+
+  const loadLatest = useCallback(
+    async (roomId: string) => {
+      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "loading" }));
+      const messages = await fetchHistory(roomId);
+      if (!messages) {
+        setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "idle" }));
+        return;
+      }
+      setLogByRoom((prev) => {
+        const known = new Set(messages.map((m) => m.id));
+        // keep live entries that arrived while the request was in flight
+        const live = (prev[roomId] ?? []).filter((e) => e.kind !== "message" || !known.has(e.message.id));
+        const history: ChatLogEntry[] = messages.map((m) => ({ kind: "message", message: m }));
+        return { ...prev, [roomId]: [...history, ...live] };
+      });
+      setHistoryStatusByRoom((prev) => ({
+        ...prev,
+        [roomId]: messages.length < CHAT_CONFIG.messagePageSize ? "exhausted" : "loaded",
+      }));
+    },
+    [fetchHistory],
+  );
+
+  const loadMoreHistory = useCallback(
+    async (roomId: string) => {
+      const current = historyStatusByRoom[roomId];
+      if (current === "loading" || current === "exhausted") return;
+      const oldest = (logRef.current[roomId] ?? []).find((e) => e.kind === "message");
+      const beforeId = oldest?.kind === "message" ? oldest.message.id : undefined;
+
+      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "loading" }));
+      const messages = await fetchHistory(roomId, beforeId);
+      if (messages) {
+        setLogByRoom((prev) => ({
+          ...prev,
+          [roomId]: [...messages.map((m): ChatLogEntry => ({ kind: "message", message: m })), ...(prev[roomId] ?? [])],
+        }));
+      }
+      setHistoryStatusByRoom((prev) => ({
+        ...prev,
+        [roomId]: !messages || messages.length < CHAT_CONFIG.messagePageSize ? "exhausted" : "loaded",
+      }));
+    },
+    [historyStatusByRoom, fetchHistory],
+  );
+
+  const handleMessage = useCallback(
+    (msg: ServerMessage) => {
+      setMetrics((prev) => ({ ...prev, messagesReceived: prev.messagesReceived + 1 }));
+      const now = new Date().toISOString();
+
+      switch (msg.type) {
+        case "joined":
+          setOnlineUsersByRoom((prev) => ({ ...prev, [msg.room_id]: msg.users }));
+          break;
+        case "message":
+          appendEntry(msg.message.room_id, { kind: "message", message: msg.message });
+          break;
+        case "user_joined":
+          if (msg.user.user_id === session?.userId) break;
+          appendEntry(msg.room_id, { kind: "user_joined", room_id: msg.room_id, ...msg.user, at: now });
+          setOnlineUsersByRoom((prev) => {
+            const users = prev[msg.room_id] ?? [];
+            if (users.some((u) => u.user_id === msg.user.user_id)) return prev;
+            return { ...prev, [msg.room_id]: [...users, msg.user] };
+          });
+          break;
+        case "user_left":
+          appendEntry(msg.room_id, { kind: "user_left", room_id: msg.room_id, ...msg.user, at: now });
+          setOnlineUsersByRoom((prev) => ({
+            ...prev,
+            [msg.room_id]: (prev[msg.room_id] ?? []).filter((u) => u.user_id !== msg.user.user_id),
+          }));
+          break;
+        case "error":
+          systemNote(`Error: ${msg.message}`);
+          break;
+        case "server_shutdown":
+          systemNote("Server is restarting, reconnecting…");
+          break;
+        case "welcome":
+        case "ping":
+          break;
+      }
+    },
+    [appendEntry, systemNote, session?.userId],
+  );
+
+  const handleStatusChange = useCallback(
+    (status: ConnectionStatus) => {
+      if (status === "reconnecting" && prevStatusRef.current !== "reconnecting") {
+        setMetrics((prev) => ({ ...prev, reconnectCount: prev.reconnectCount + 1 }));
+      }
+      prevStatusRef.current = status;
+      if (status !== "connected") return;
+
+      // Membership lives on the socket, so rejoin everything after a reconnect.
+      const rooms = joinedRoomsRef.current.length > 0 ? joinedRoomsRef.current : ["general"];
+      if (joinedRoomsRef.current.length === 0) {
+        setJoinedRooms(rooms);
+        setActiveRoomId((prev) => prev ?? rooms[0]);
+      }
+      for (const room of rooms) {
+        sendRef.current(buildJoin(room));
+        void loadLatest(room);
+      }
+    },
+    [loadLatest],
+  );
+
+  const { status, send, reconnect } = useChatWebSocket({
+    token: session?.token ?? null,
     onMessage: handleMessage,
     onStatusChange: handleStatusChange,
+    onFatalClose: onSessionExpired,
   });
 
   useEffect(() => {
@@ -208,13 +213,13 @@ export function useChatState({ userId, username }: UseChatStateArgs): UseChatSta
 
   const joinRoom = useCallback(
     (roomId: string) => {
-      setJoinedRooms((prev) => (prev.includes(roomId) ? prev : [...prev, roomId]));
-      send(buildJoin(roomId));
-      void loadHistory(roomId);
-      void refreshOnlineUsers(roomId);
-      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: prev[roomId] ?? "idle" }));
+      if (!joinedRoomsRef.current.includes(roomId)) {
+        setJoinedRooms((prev) => [...prev, roomId]);
+        send(buildJoin(roomId));
+        void loadLatest(roomId);
+      }
     },
-    [send, loadHistory, refreshOnlineUsers],
+    [send, loadLatest],
   );
 
   const leaveRoom = useCallback(
@@ -231,36 +236,16 @@ export function useChatState({ userId, username }: UseChatStateArgs): UseChatSta
     [send],
   );
 
-  const setActiveRoom = useCallback((roomId: string) => {
-    setActiveRoomId(roomId);
-  }, []);
-
   const sendMessage = useCallback(
     (content: string) => {
-      if (!activeRoomId) return;
+      const room = activeRoomRef.current;
       const trimmed = content.trim();
-      if (!trimmed) return;
-      const clientMessageId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random()}`;
-      const ok = send(buildChat(activeRoomId, trimmed, clientMessageId));
-      if (ok) {
+      if (!room || !trimmed) return;
+      if (send(buildChat(room, trimmed, crypto.randomUUID()))) {
         setMetrics((prev) => ({ ...prev, messagesSent: prev.messagesSent + 1 }));
       }
     },
-    [activeRoomId, send],
-  );
-
-  const loadMoreHistory = useCallback(
-    async (roomId: string) => {
-      const current = historyStatusByRoom[roomId];
-      if (current === "loading" || current === "exhausted") return;
-      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "loading" }));
-      await loadHistory(roomId);
-      setHistoryStatusByRoom((prev) => ({ ...prev, [roomId]: "exhausted" }));
-    },
-    [historyStatusByRoom, loadHistory],
+    [send],
   );
 
   return {
@@ -268,7 +253,7 @@ export function useChatState({ userId, username }: UseChatStateArgs): UseChatSta
     reconnect,
     joinedRooms,
     activeRoomId,
-    setActiveRoom,
+    setActiveRoom: setActiveRoomId,
     joinRoom,
     leaveRoom,
     logByRoom,
@@ -279,5 +264,3 @@ export function useChatState({ userId, username }: UseChatStateArgs): UseChatSta
     metrics,
   };
 }
-
-export const SUGGESTED_ROOMS_LIST = SUGGESTED_ROOMS;

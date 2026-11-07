@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useChatState } from "@/hooks/use-chat-state";
+import type { Session } from "@/lib/chat-types";
 import { LoginScreen } from "./login-screen";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
@@ -12,23 +13,44 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-interface CurrentUser {
-  userId: string;
-  username: string;
+const SESSION_KEY = "chat.session";
+
+function loadSession(): Session | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as Session) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function ChatApp() {
-  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [user, setUser] = useState<Session | null>(loadSession);
   const [infoOpen, setInfoOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  const chat = useChatState({
-    userId: user?.userId ?? null,
-    username: user?.username ?? null,
-  });
+  const login = useCallback((session: Session) => {
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    } catch {
+      // storage unavailable: the session just won't survive a reload
+    }
+    setUser(session);
+  }, []);
+
+  const logout = useCallback(() => {
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch {
+      // ignore
+    }
+    setUser(null);
+  }, []);
+
+  const chat = useChatState(user, logout);
 
   if (!user) {
-    return <LoginScreen onLogin={setUser} />;
+    return <LoginScreen onLogin={login} />;
   }
 
   const activeRoomId = chat.activeRoomId;
